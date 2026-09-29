@@ -1,4 +1,4 @@
-# Baseline pipeline configuration.
+# Baseline pipeline configuration
 # Nothing here is hardcoded in the source files below -- everything tunable lives in this one place.
 
 data:
