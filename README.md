@@ -164,3 +164,38 @@ Alternative: set up an SSH key once (`ssh-keygen -t ed25519`, then add the publi
 ## Dataset
 
 See `data/README.md`.
+
+## Model evaluation
+
+Models were evaluated using stratified 5-fold cross-validation on
+5,771 development rows. The same folds were used for all four models.
+Preprocessing was fitted inside each fold. The final test set
+(1,443 rows) was kept aside and was not evaluated during these runs.
+
+| Model | Historical holdout accuracy | CV accuracy (mean ± std) | CV train–val gap |
+|---|---|---|---|
+| Dummy | Not recorded | 0.549 ± 0.000 | ≈ 0.000 |
+| Logistic regression | 0.657* | 0.672 ± 0.013 | +0.003 |
+| Decision tree | Not recorded | 0.610 ± 0.018 | +0.085 |
+| Random forest | — | 0.650 ± 0.018 | +0.083 |
+
+*The historical logistic regression result comes from
+`results/run_20260922_193822.txt`. Its preprocessing settings were
+not recorded in the log, so it cannot be confirmed as the Week 3
+recipe. Missing historical results are reported explicitly.
+
+### Interpretation
+
+I trust the cross-validation estimate more than a single holdout score
+because it evaluates the pipeline across five splits and reports
+variation between folds.
+Logistic regression achieved the highest mean validation accuracy
+(0.672) and the smallest train–validation gap among the learned models
+(0.003), so I retained it in config.yaml.
+Decision tree and random forest had larger gaps (0.085 and 0.083),
+indicating more overfitting under the current settings.
+The historical logistic regression holdout accuracy was 0.657, but
+the difference from the current CV score cannot be attributed solely
+to cross-validation because preprocessing also changed.
+Since only one historical model result was saved, I cannot verify
+whether the earlier best-model ranking remained unchanged.
