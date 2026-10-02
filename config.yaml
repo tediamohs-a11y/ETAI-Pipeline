@@ -1,27 +1,43 @@
-# Baseline pipeline configuration
+# Baseline pipeline configuration.
 # Nothing here is hardcoded in the source files below -- everything tunable lives in this one place.
 
 data:
   path: "data/compas_two_year_recidivism.csv"
   target: "two_year_recid"
   sensitive_attr: "race"          # excluded from model features, used only to audit fairness
-  # id/COMPAS's-own-score dropped as before, plus the three columns week 3's multicollinearity
-  # check found redundant (see src/data_diagnostics.py + the EDA notebook's VIF walkthrough)
-  drop_columns: ["id", "decile_score", "score_text", "prior_offenses", "age_in_months", "juvenile_total"]
+  # kept in the data but never used as model features: the row id and COMPAS's own score
+  # (the redundant columns are removed earlier, by clean_dataset() -- see diagnostics.redundant_columns)
+  drop_columns: ["id", "decile_score", "score_text"]
 
-split:
-  test_size: 0.2
+# Week 4: the FINAL TEST SET. Carved out once, stratified, and locked: never used to fit,
+# tune, compare or choose anything. Used only for the final assessment.
+# Do not change these two values after week 4 -- a new seed would silently give you a
+# different (already partly "seen") test set.
+test_set:
+  size: 0.2
   random_state: 42
 
-# New this week (see Practical/W3/notebooks/01_eda_introduction.ipynb): what src/data_diagnostics.py
-# and src/preprocessing.py need to stay generic instead of hardcoding COMPAS's column names.
+# Week 4: how models are evaluated -- stratified k-fold cross-validation on the
+# development set (everything except the locked test set). Same random_state = same folds on
+# every run, for every model, so comparisons are like-for-like.
+cv:
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+  scoring: "accuracy"   # one metric for now, so numbers compare directly with weeks 2-3
+  n_jobs: 1             # folds fitted in parallel; -1 = all cores (only pays off for slow models, e.g. random forest)
+
+# The week 3 diagnosis, written down as cleaning rules (found in Practical/W3/notebooks/01_eda_introduction.ipynb).
+# clean_dataset() in src/preprocessing.py reads everything below, so it never hardcodes COMPAS's column names.
 diagnostics:
   id_column: "id"
-  candidate_predictors: ["sex", "race", "age_cat", "c_charge_degree", "score_text"]
   # columns that load as text purely because a placeholder token (see placeholder_tokens below)
   # shows up somewhere in them
   numeric_text_columns: ["priors_count", "prior_offenses"]
-  placeholder_tokens: ["-", "?", "n/a", "N/A", "na", "NA", ""]
+  # "nan" (week 4): the category cleanup converts columns to text, which turns a real NaN into the string
+  # "nan"; its last step turns every token listed here into NaN, so listing "nan" turns those back into gaps.
+  # Safe: read_csv already reads a literal "nan" in the file as missing, so any "nan" string was created by the cleanup.
+  placeholder_tokens: ["-", "?", "n/a", "N/A", "na", "NA", "", "nan"]
   validity_rules:
     age: {min: 18, max: 100}
     decile_score: {min: 1, max: 10}
@@ -49,26 +65,44 @@ diagnostics:
       medium: "Medium"
       high: "High"
   # multicollinearity casualties (see the EDA notebook's correlation heatmap + VIF section) --
-  # also listed in data.drop_columns above; kept here too so preprocessing.py doesn't need
-  # to reach into the data: section to know what to drop
+  # dropped by clean_dataset(), so they never reach the features
   redundant_columns: ["prior_offenses", "age_in_months", "juvenile_total"]
 
-# New this week (see Practical/W3/notebooks/02_preprocessing.ipynb): this week's diagnosis-driven,
-# leak-safe preprocessing recipe. encoder/scaler chosen by the empirical grid in that notebook --
-# don't hand-pick a different pair here without re-running the grid.
+# The preprocessing recipe (week 4 -- see Practical/W4/notebooks/02_preprocessing.ipynb). Every step here is
+# FITTED on training rows only, inside the model's Pipeline. Encoder and scaler are chosen by hand for now
+# (reasons below).
 preprocessing:
-  encoder: "target"      # winner of the 4x4 empirical grid (onehot/ordinal/count/target x none/standard/minmax/robust),
-  scaler: "standard"     # scored on accuracy across 15 repeated splits -- see 02_preprocessing.ipynb's grid + paired check
+  # options: "onehot" | "ordinal" | "count" | "target"
+  encoder: "target"      # compact (1 column per feature) and informative; sklearn's version cross-fits, so no leak
+  # options: "none" | "standard" | "minmax" | "robust"
+  scaler: "robust"       # median/IQR: the few extreme counts (e.g. priors_count) don't set the scale for everyone
   numeric_features: ["age", "juv_fel_count", "juv_misd_count", "juv_other_count", "priors_count"]
   categorical_features: ["sex", "age_cat", "c_charge_degree"]
+  # MNAR-diagnosed columns (see diagnostics above / the EDA notebook's mechanism test) get an
+  # extra "_was_missing" flag alongside their imputed value, so the model can still see the
+  # pattern even though the fill itself is just a median/mode
   mnar_indicator_sources: ["priors_count", "c_charge_degree"]
+  # seed for the target encoder's internal cross-fitting (week 4: sklearn's TargetEncoder)
+  random_state: 42
   imputation:
     numeric_strategy: "median"        # applies to age, juv_fel_count, juv_misd_count, juv_other_count, priors_count
     categorical_strategy: "most_frequent"   # applies to sex, age_cat, c_charge_degree
 
 model:
-  type: "decision_tree"
-  params: {}
+  # one of: "dummy" (majority-class floor), "logistic_regression", "decision_tree", "random_forest"
+  # (random forest: sensible defaults, untuned -- see the example below)
+  type: "logistic_regression"
+  params:
+    # bumped from 1000 -- with this week's encoder/scaler pair in place, 1000 iterations
+    # was cutting lbfgs off before it converged (a ConvergenceWarning, not a real problem,
+    # but worth just giving it enough room rather than living with the warning)
+    max_iter: 2000
+  # Random Forest example -- swap the two lines above for these to run it:
+  # type: "random_forest"
+  # params:
+  #   n_estimators: 300
+  #   random_state: 42   # forests are random (bootstrap rows + random feature subsets): fix the seed
+  #   n_jobs: -1         # use every CPU core -- the trees are independent, so they train in parallel
 
 output:
   results_dir: "results"   # each run's full report is saved here as a timestamped .txt file
