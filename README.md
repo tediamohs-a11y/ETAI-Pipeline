@@ -199,3 +199,24 @@ the difference from the current CV score cannot be attributed solely
 to cross-validation because preprocessing also changed.
 Since only one historical model result was saved, I cannot verify
 whether the earlier best-model ranking remained unchanged.
+
+## Preprocessing experiment: median vs mean imputation
+
+I compared median and mean imputation for numeric features using
+logistic regression. All other settings were unchanged, including
+the five cross-validation folds (random_state: 42).
+
+| Numeric imputation | CV accuracy (mean ± std) | CV train–val gap |
+|---|---|---|
+| Median | 0.672 ± 0.013 | +0.003 |
+| Mean | 0.672 ± 0.013 | +0.003 |
+
+Changing from median to mean imputation produced small changes in
+individual fold scores, but no improvement at the reported precision.
+Both methods achieved the same rounded mean accuracy, standard
+deviation and train–validation gap.
+This experiment therefore provides no evidence that mean imputation
+improves the current pipeline.
+I retained median imputation because it is less sensitive to extreme
+numeric values.
+The locked test set was not evaluated.
