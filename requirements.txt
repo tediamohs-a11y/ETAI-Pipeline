@@ -3,3 +3,4 @@ numpy>=1.24
 scikit-learn>=1.9
 PyYAML>=6.0
 category-encoders>=2.6
+optuna>=4.0

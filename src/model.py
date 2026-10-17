@@ -3,6 +3,8 @@ from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
+from sklearn.pipeline import Pipeline
+from src.preprocessing import build_preprocessor
 
 _MODELS = {
     # always predicts the most frequent class -- the floor every real model must beat
@@ -23,3 +25,8 @@ def build_model(model_config: dict):
         raise ValueError(f"Unknown model type: {model_type}. Options: {list(_MODELS)}")
 
     return _MODELS[model_type](**params)
+def build_pipeline(preprocessing_config: dict, model_config: dict) -> Pipeline:
+    return Pipeline([
+        ("prep", build_preprocessor(preprocessing_config)),
+        ("model", build_model(model_config)),
+    ])

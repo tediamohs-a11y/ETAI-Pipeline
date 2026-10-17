@@ -220,3 +220,52 @@ improves the current pipeline.
 I retained median imputation because it is less sensitive to extreme
 numeric values.
 The locked test set was not evaluated.
+
+### Hyperparameter tuning
+
+Hyperparameters were selected using Optuna with a seeded TPE sampler
+(random_state: 42). Each candidate was evaluated using 5-fold
+stratified cross-validation of the whole preprocessing-and-model
+pipeline. Decision tree and logistic regression used 30 trials per
+study; random forest used 15. Performance was estimated with nested
+cross-validation using the same five outer folds for all models.
+Preprocessing was refitted within each training fold, and the locked
+test set was never used for tuning or evaluation.
+
+Search spaces:
+- Decision tree: max_depth 1–20, min_samples_leaf 1–200
+  (log scale), criterion gini or entropy.
+- Logistic regression: C from 0.0001 to 100 (log scale).
+- Random forest: n_estimators 50–150, max_depth in
+  [None, 5, 10, 20, 30], min_samples_leaf 1–200 (log scale),
+  max_features in ["sqrt", "log2", 0.5, 1.0].
+
+| Model | Default: CV mean ± std | Tuned: nested CV mean ± std | Tuning score (best trial) | Optimism* | Chosen hyperparameters |
+|---|---|---|---|---|---|
+| Decision tree | 0.610 ± 0.018 | 0.672 ± 0.017 | 0.679 | +0.002 | max_depth=6, min_samples_leaf=101, criterion=gini |
+| Logistic regression | 0.672 ± 0.013 | 0.673 ± 0.016 | 0.678 | +0.002 | C=0.071542 |
+| Random forest | 0.647 ± 0.016 | 0.680 ± 0.015 | 0.683 | +0.000 | n_estimators=139, max_depth=20, min_samples_leaf=51, max_features=log2 |
+
+*Optimism is the mean inner best score minus the mean outer validation
+score within nested CV, as calculated by tuning_report().
+Values are rounded to three decimal places.
+
+Tuning improved the decision tree by 0.062 and the random forest by
+0.033, both larger than their tuned fold-to-fold standard deviations.
+Logistic regression improved by only 0.001, much less than its
+standard deviation; tuning regularisation strength offers less
+flexibility than tuning tree complexity.
+The train–validation gap decreased from 0.085 to 0.013 for the
+decision tree and from 0.085 to 0.008 for the random forest.
+The highest mean accuracy shifted from default logistic regression
+to tuned random forest, although its 0.007 lead over tuned logistic
+regression is smaller than the fold-to-fold standard deviations and
+does not establish a clear winner.
+I would provisionally select random forest and report its nested-CV
+accuracy of 0.680 ± 0.015, rather than the best-trial score of 0.683,
+because the outer validation rows did not participate in tuning.
+
+Final tuning runs:
+- Decision tree: results/run_20261017_212142.txt
+- Logistic regression: results/run_20261017_212827.txt
+- Random forest: results/run_20261017_213615.txt

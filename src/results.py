@@ -23,6 +23,7 @@ def save_run(results_dir: str, config: dict, report_text: str) -> str:
     header = (
         f"Run: {timestamp}\n"
         f"Model: {config['model']['type']}  params={config['model'].get('params')}\n"
+        f"Tuning: {config.get('tuning', {})}\n"
         f"Preprocessing: encoder={config['preprocessing']['encoder']}  "
         f"scaler={config['preprocessing']['scaler']}\n"
         f"CV: {cv['n_splits']} stratified folds  shuffle={cv.get('shuffle', True)}  "
