@@ -104,6 +104,22 @@ def drop_duplicate_rows(df: pd.DataFrame, id_column: str = None) -> pd.DataFrame
         out = out.drop_duplicates(subset=id_column, keep="first")
     return out
 
+def add_engineered_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Create fixed-formula features without learning from the data."""
+    out = df.copy()
+
+    # Course example: priors relative to years of adulthood.
+    out["priors_per_adult_year"] = (
+        out["priors_count"] / (out["age"] - 17).clip(lower=1)
+    )
+
+    # Own feature 1: diminishing differences at high prior counts.
+    out["log_priors_count"] = np.log1p(out["priors_count"])
+
+    # Own feature 2: interaction between age and prior count.
+    out["age_x_priors"] = out["age"] * out["priors_count"]
+
+    return out
 
 def add_missingness_indicators(df: pd.DataFrame, mnar_indicator_sources: list) -> pd.DataFrame:
     """Adds a `<col>_was_missing` flag for each MNAR-diagnosed column, before that

@@ -7,6 +7,7 @@ from src.data import load_data
 from src.preprocessing import (
     clean_dataset,
     drop_duplicate_rows,
+    add_engineered_features,
     split_features_target,
     split_dev_test,
 )
@@ -40,6 +41,8 @@ def main():
         df_clean, config["diagnostics"].get("id_column")
     )
 
+    df_clean = add_engineered_features(df_clean)
+    
     mnar_sources = config["preprocessing"].get(
         "mnar_indicator_sources", []
     )
@@ -67,7 +70,52 @@ def main():
     )
     scoring = cv_config.get("scoring", "accuracy")
     n_jobs = cv_config.get("n_jobs", 1)
+# Recovery mode: finish tuning without repeating nested CV.
+    tuning_config = config.get("tuning", {})
 
+    if tuning_config.get("final_tuning_only", False):
+        model_type = config["model"]["type"]
+        search_space = tuning_config["search_spaces"][model_type]
+
+        inner_cv = StratifiedKFold(
+            n_splits=tuning_config["n_splits"],
+            shuffle=True,
+            random_state=tuning_config["random_state"],
+        )
+
+        print("\n=== Final tuning only; nested CV is skipped ===")
+        pipeline, study = tune_pipeline(
+            pipeline, X_dev, y_dev,
+            inner_cv, scoring, search_space,
+            tuning_config["n_trials"],
+            tuning_config["random_state"],
+            n_jobs=n_jobs,
+        )
+
+        pipeline.fit(X_dev, y_dev)
+
+        report = (
+            "Recovery run: final tuning only.\n"
+            "Nested CV was not repeated in this run.\n"
+            "No OOF classification or fairness reports were "
+            "computed in this run.\n\n"
+            f"Optuna trials: {len(study.trials)}\n"
+            f"Best hyperparameters: {study.best_params}\n"
+            f"Best tuning CV score: {study.best_value:.6f}\n"
+            "This tuning score is optimistic; it is not "
+            "the nested-CV performance estimate.\n\n"
+            f"Final model: {model_type} refit on "
+            f"{len(X_dev)} development rows.\n"
+            f"Locked test set: {len(X_test)} rows, not evaluated.\n"
+        )
+
+        results_dir = config.get("output", {}).get(
+            "results_dir", "results"
+        )
+        path = save_run(results_dir, config, report)
+        print(report)
+        print(f"Full results saved to {path}")
+        return
     # 1. Evaluate the model before tuning.
     print("\n=== Default-hyperparameter CV ===")
     fold_scores, y_oof = cross_validate_pipeline(

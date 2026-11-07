@@ -269,3 +269,101 @@ Final tuning runs:
 - Decision tree: results/run_20261017_212142.txt
 - Logistic regression: results/run_20261017_212827.txt
 - Random forest: results/run_20261017_213615.txt
+
+
+## Week 6: Ensembles
+
+All Week 6 tuning experiments used 30 Optuna trials per study,
+five inner folds and the same five stratified outer folds
+(random_state=42). Preprocessing was fitted within the training
+folds. The 1,443 test rows remained locked throughout.
+
+The table below uses the original features, without the three
+engineered features. The decision-tree results are retained from
+Week 5. Random Forest used 200 trees; its Week 6 search space
+replaced the earlier Week 5 search space.
+
+| Model | Default CV accuracy ± std (gap) | Tuned nested-CV accuracy ± std (gap) | Best-trial tuning score | Selected hyperparameters |
+|---|---|---|---|---|
+| Logistic regression | 0.672 ± 0.013 (+0.003) | 0.673 ± 0.016 (+0.004) | 0.678 | C=0.071542 |
+| Decision tree (Week 5) | 0.610 ± 0.018 (+0.085) | 0.672 ± 0.017 (+0.013) | 0.679 | max_depth=6, min_samples_leaf=101, criterion=gini |
+| Random Forest | 0.650 ± 0.019 (+0.082) | 0.681 ± 0.015 (+0.009) | 0.683 | n_estimators=200, max_depth=22, min_samples_leaf=42, max_features=0.5 |
+| Oblique Random Forest | 0.647 ± 0.011 (+0.114) | 0.679 ± 0.013 (+0.013) | 0.683 | n_estimators=200, tree max_depth=6, tree min_samples_leaf=3, projection n_components=5 |
+| AdaBoost | 0.676 ± 0.012 (+0.006) | 0.682 ± 0.017 (+0.004) | 0.684 | estimator max_depth=4, n_estimators=220, learning_rate=0.025081 |
+
+Gap means mean training accuracy minus mean validation accuracy.
+Best-trial tuning scores are selection scores, not independent
+performance estimates.
+
+AdaBoost has the highest nested-CV mean, but its lead over Random
+Forest is only 0.001, much smaller than their fold standard
+deviations; this does not establish a clear winner.
+I would provisionally choose AdaBoost without the engineered
+features and report its nested-CV accuracy of 0.682 ± 0.017.
+Random Forest allows deep trees but limits their complexity with
+at least 42 observations per leaf, whereas AdaBoost selects
+shallower trees and a small learning rate.
+The oblique forest selects depth 6 and five projected components,
+but does not outperform the ordinary forest.
+Tuning reduces both forests' train-validation gaps substantially.
+
+### Oblique Random Forest: interrupted run
+
+The 30-trial nested CV completed, but the subsequent tuning on
+all development rows was interrupted before the report was saved.
+The nested-CV result above was retained from the terminal output.
+Final tuning was then rerun separately with the same settings,
+without repeating nested CV. The recovery report contains the
+selected hyperparameters, but no nested out-of-fold classification
+or fairness reports.
+
+### Feature engineering
+
+Three features were added in src/preprocessing.py:
+
+| Feature | Formula | Purpose |
+|---|---|---|
+| priors_per_adult_year | priors_count / max(age - 17, 1) | Course example: prior count relative to years since age 17 |
+| log_priors_count | log(1 + priors_count) | Reduce the influence of differences at high prior counts |
+| age_x_priors | age * priors_count | Provide an explicit age-by-priors interaction |
+
+These formulas do not estimate statistics or use the target.
+They are applied after cleaning and de-duplication, before the
+development/test split. Missing values remain missing until
+imputation inside the pipeline.
+
+Each model was retuned with and without the three features,
+using 30 trials and the same inner and outer folds.
+
+| Model | Without engineered features: nested CV | With engineered features: nested CV | Change in mean accuracy |
+|---|---|---|---|
+| Random Forest | 0.681 ± 0.015 | 0.676 ± 0.009 | -0.005 |
+| AdaBoost | 0.682 ± 0.017 | 0.676 ± 0.013 | -0.006 |
+| Logistic regression | 0.673 ± 0.016 | 0.676 ± 0.010 | +0.003 |
+
+The feature bundle slightly improves logistic regression's mean
+accuracy, while both ensembles score slightly lower.
+None of the changes exceeds the corresponding fold standard
+deviation. This descriptive comparison does not establish
+statistical significance.
+The features were tested together, so the experiment cannot
+identify each feature's individual contribution.
+I would retain the original feature set for the provisional
+AdaBoost model.
+
+### Results files
+
+Without engineered features:
+- Random Forest: results/run_20261107_211617.txt
+- AdaBoost: results/run_20261107_222632.txt
+- Logistic regression: results/run_20261107_235855.txt
+- Oblique Random Forest, final-tuning recovery:
+  results/run_20261107_210732.txt
+- Oblique Random Forest default CV: results/run_20261106_173118.txt
+  (this earlier report used only 5 tuning trials; its tuned results
+  are not used in the 30-trial comparison above)
+
+With all three engineered features:
+- Random Forest: results/run_20261107_232122.txt
+- AdaBoost: results/run_20261107_230904.txt
+- Logistic regression: results/run_20261107_233235.txt

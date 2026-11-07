@@ -77,7 +77,13 @@ preprocessing:
   encoder: "target"      # compact (1 column per feature) and informative; sklearn's version cross-fits, so no leak
   # options: "none" | "standard" | "minmax" | "robust"
   scaler: "robust"       # median/IQR: the few extreme counts (e.g. priors_count) don't set the scale for everyone
-  numeric_features: ["age", "juv_fel_count", "juv_misd_count", "juv_other_count", "priors_count"]
+  numeric_features:
+    - age
+    - juv_fel_count
+    - juv_misd_count
+    - juv_other_count
+    - priors_count
+    
   categorical_features: ["sex", "age_cat", "c_charge_degree"]
   # MNAR-diagnosed columns (see diagnostics above / the EDA notebook's mechanism test) get an
   # extra "_was_missing" flag alongside their imputed value, so the model can still see the
@@ -90,12 +96,17 @@ preprocessing:
     categorical_strategy: "most_frequent"   # applies to sex, age_cat, c_charge_degree
 
 model:
-  type: "random_forest"
+  type: "adaboost"
   params:
+    max_depth: 4
+    n_estimators: 220
+    learning_rate: 0.025081156860452335
     random_state: 42
+    
 tuning:
-  enabled: true
-  n_trials: 15
+  enabled: false
+  final_tuning_only: false
+  n_trials: 30
   n_splits: 5
   random_state: 42
 
@@ -122,13 +133,10 @@ tuning:
         log: true
 
     random_forest:
-      model__n_estimators:
-        type: int
-        low: 50
-        high: 150
       model__max_depth:
-        type: categorical
-        choices: [null, 5, 10, 20, 30]
+        type: int
+        low: 2
+        high: 30
       model__min_samples_leaf:
         type: int
         low: 1
@@ -136,7 +144,38 @@ tuning:
         log: true
       model__max_features:
         type: categorical
-        choices: ["sqrt", "log2", 0.5, 1.0]
+        choices: ["sqrt", 0.5, 1.0]
+
+    oblique_random_forest:
+      model__estimator__tree__max_depth:
+        type: int
+        low: 2
+        high: 30
+      model__estimator__tree__min_samples_leaf:
+        type: int
+        low: 1
+        high: 200
+        log: true
+      model__estimator__project__n_components:
+        type: int
+        low: 3
+        high: 10
+
+    adaboost:
+      model__estimator__max_depth:
+        type: int
+        low: 1
+        high: 8
+      model__n_estimators:
+        type: int
+        low: 25
+        high: 400
+        log: true
+      model__learning_rate:
+        type: float
+        low: 0.01
+        high: 1.0
+        log: true
 
 output:
-  results_dir: "results"   # each run's full report is saved here as a timestamped .txt file
+  results_dir: "results"
