@@ -1,5 +1,8 @@
-"""Run the predictive pipeline with optional week-5 tuning."""
+"""Run the Week 7 pipeline with multiple metrics and a scoreboard."""
 
+from datetime import datetime
+
+import optuna
 import yaml
 from sklearn.model_selection import StratifiedKFold
 
@@ -13,6 +16,7 @@ from src.preprocessing import (
 )
 from src.model import build_pipeline
 from src.evaluate import (
+    build_scorers,
     cross_validate_pipeline,
     cv_report,
     oof_classification_report,
@@ -23,120 +27,151 @@ from src.tuning import (
     nested_cross_validate,
     tuning_report,
 )
-from src.results import save_run
+from src.results import save_run, save_scores
 
 
 def load_config(path: str = "config.yaml") -> dict:
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    with open(path, "r", encoding="utf-8") as file:
+        return yaml.safe_load(file)
 
 
 def main():
     config = load_config()
+    run = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_type = config["model"]["type"]
 
-    # Fixed cleaning rules: nothing is learned here.
+    # Fixed cleaning rules and formulas learn nothing from the data.
     df_raw = load_data(config["data"]["path"])
     df_clean = clean_dataset(df_raw, config["diagnostics"])
     df_clean = drop_duplicate_rows(
-        df_clean, config["diagnostics"].get("id_column")
+        df_clean,
+        config["diagnostics"].get("id_column"),
     )
-
     df_clean = add_engineered_features(df_clean)
-    
+
     mnar_sources = config["preprocessing"].get(
         "mnar_indicator_sources", []
     )
     X, y, extras = split_features_target(
-        df_clean, config["data"], mnar_sources
+        df_clean,
+        config["data"],
+        mnar_sources,
     )
 
-    # The final test set remains locked.
-    X_dev, X_test, y_dev, y_test, extras_dev, extras_test = split_dev_test(
-        X, y, extras,
-        test_size=config["test_set"]["size"],
-        random_state=config["test_set"]["random_state"],
+    # Preserve the original locked test set.
+    X_dev, X_test, y_dev, y_test, extras_dev, extras_test = (
+        split_dev_test(
+            X,
+            y,
+            extras,
+            test_size=config["test_set"]["size"],
+            random_state=config["test_set"]["random_state"],
+        )
+    )
+
+    cv_config = config["cv"]
+    shuffle = cv_config.get("shuffle", True)
+
+    cv = StratifiedKFold(
+        n_splits=cv_config["n_splits"],
+        shuffle=shuffle,
+        random_state=(
+            cv_config.get("random_state") if shuffle else None
+        ),
+    )
+
+    metrics = cv_config["metrics"]
+    selection_metric = cv_config["selection_metric"]
+
+    if selection_metric not in metrics:
+        raise ValueError(
+            "cv.selection_metric must also appear in cv.metrics."
+        )
+
+    scorers = build_scorers(metrics)
+    n_jobs = cv_config.get("n_jobs", 1)
+
+    tuning_config = config.get("tuning", {})
+    tuning_enabled = tuning_config.get("enabled", False)
+
+    if tuning_config.get("final_tuning_only", False):
+        raise ValueError(
+            "Set tuning.final_tuning_only to false for Week 7. "
+            "The scoreboard requires full CV or nested CV."
+        )
+
+    search_spaces = tuning_config.get("search_spaces") or {}
+
+    if tuning_enabled and model_type not in search_spaces:
+        raise ValueError(
+            f"No tuning search space for '{model_type}'. "
+            "Add it or set tuning.enabled to false."
+        )
+
+    print(
+        f"Model: {model_type} | "
+        f"Selection metric: {selection_metric} | "
+        f"{cv_config['n_splits']}-fold CV",
+        flush=True,
+    )
+    print(
+        f"Development rows: {len(X_dev)} | "
+        f"Locked test rows: {len(X_test)} (not evaluated)",
+        flush=True,
     )
 
     pipeline = build_pipeline(
         config["preprocessing"], config["model"]
     )
-
-    cv_config = config["cv"]
-    shuffle = cv_config.get("shuffle", True)
-    cv = StratifiedKFold(
-        n_splits=cv_config["n_splits"],
-        shuffle=shuffle,
-        random_state=cv_config.get("random_state") if shuffle else None,
-    )
-    scoring = cv_config.get("scoring", "accuracy")
-    n_jobs = cv_config.get("n_jobs", 1)
-# Recovery mode: finish tuning without repeating nested CV.
-    tuning_config = config.get("tuning", {})
-
-    if tuning_config.get("final_tuning_only", False):
-        model_type = config["model"]["type"]
-        search_space = tuning_config["search_spaces"][model_type]
-
-        inner_cv = StratifiedKFold(
-            n_splits=tuning_config["n_splits"],
-            shuffle=True,
-            random_state=tuning_config["random_state"],
-        )
-
-        print("\n=== Final tuning only; nested CV is skipped ===")
-        pipeline, study = tune_pipeline(
-            pipeline, X_dev, y_dev,
-            inner_cv, scoring, search_space,
-            tuning_config["n_trials"],
-            tuning_config["random_state"],
-            n_jobs=n_jobs,
-        )
-
-        pipeline.fit(X_dev, y_dev)
-
-        report = (
-            "Recovery run: final tuning only.\n"
-            "Nested CV was not repeated in this run.\n"
-            "No OOF classification or fairness reports were "
-            "computed in this run.\n\n"
-            f"Optuna trials: {len(study.trials)}\n"
-            f"Best hyperparameters: {study.best_params}\n"
-            f"Best tuning CV score: {study.best_value:.6f}\n"
-            "This tuning score is optimistic; it is not "
-            "the nested-CV performance estimate.\n\n"
-            f"Final model: {model_type} refit on "
-            f"{len(X_dev)} development rows.\n"
-            f"Locked test set: {len(X_test)} rows, not evaluated.\n"
-        )
-
-        results_dir = config.get("output", {}).get(
-            "results_dir", "results"
-        )
-        path = save_run(results_dir, config, report)
-        print(report)
-        print(f"Full results saved to {path}")
-        return
-    # 1. Evaluate the model before tuning.
-    print("\n=== Default-hyperparameter CV ===")
-    fold_scores, y_oof = cross_validate_pipeline(
-        pipeline, X_dev, y_dev, cv, scoring, n_jobs=n_jobs
+    floor_pipeline = build_pipeline(
+        config["preprocessing"],
+        {"type": "dummy", "params": {"strategy": "most_frequent"}},
     )
 
-    report = "Default-hyperparameter CV\n"
-    report += cv_report(fold_scores, scoring)
+    # No-model floor, evaluated on exactly the same folds.
+    floor_scores, _ = cross_validate_pipeline(
+        floor_pipeline,
+        X_dev,
+        y_dev,
+        cv,
+        {selection_metric: scorers[selection_metric]},
+        selection_metric,
+        n_jobs=n_jobs,
+    )
+    floor = floor_scores["validation"].mean()
 
-    tuning_config = config.get("tuning", {})
+    # Evaluate the parameters currently specified in config.yaml.
+    print("\n=== Configured parameters: CV ===", flush=True)
+    fold_scores, oof_proba = cross_validate_pipeline(
+        pipeline,
+        X_dev,
+        y_dev,
+        cv,
+        scorers,
+        selection_metric,
+        n_jobs=n_jobs,
+    )
+    untuned = fold_scores["validation"].mean()
 
-    if tuning_config.get("enabled", False):
-        model_type = config["model"]["type"]
-        search_spaces = tuning_config.get("search_spaces") or {}
+    default_report = cv_report(
+        fold_scores,
+        metrics,
+        selection_metric,
+        "Configured parameters: cross-validation",
+    )
+    print(default_report)
 
-        if model_type not in search_spaces:
-            raise ValueError(
-                f"No tuning search space for '{model_type}'. "
-                "Add it to tuning.search_spaces in config.yaml."
-            )
+    report = (
+        f"Configured parameters: "
+        f"{config['model'].get('params')}\n\n"
+        + default_report
+        + f"\n\nDummy floor: {selection_metric} = {floor:.3f}"
+    )
 
+    final_scores = fold_scores
+    study = None
+
+    if tuning_enabled:
         search_space = search_spaces[model_type]
         n_trials = tuning_config["n_trials"]
         tuning_seed = tuning_config["random_state"]
@@ -147,60 +182,179 @@ def main():
             random_state=tuning_seed,
         )
 
-        # 2. Honest evaluation of the complete tuning procedure.
-        print("\n=== Nested cross-validation ===")
-        nested_scores, y_oof = nested_cross_validate(
-            pipeline, X_dev, y_dev,
-            cv, inner_cv, scoring, search_space,
-            n_trials, tuning_seed, n_jobs=n_jobs,
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+        print(
+            f"\n=== Nested CV: {n_trials} trials per study ===",
+            flush=True,
+        )
+        final_scores, oof_proba = nested_cross_validate(
+            pipeline,
+            X_dev,
+            y_dev,
+            cv,
+            inner_cv,
+            scorers,
+            selection_metric,
+            search_space,
+            n_trials,
+            tuning_seed,
+            n_jobs=n_jobs,
         )
 
-        report += "\n\nNested cross-validation\n"
-        report += cv_report(nested_scores, scoring)
+        nested_report = cv_report(
+            final_scores,
+            metrics,
+            selection_metric,
+            "Nested cross-validation",
+        )
+        print(nested_report)
+        report += "\n\n" + nested_report
 
-        # 3. Choose final parameters using all development rows.
-        print("\n=== Tuning on all development rows ===")
+        # Save completed nested results before final tuning.
+        results_dir = config.get("output", {}).get(
+            "results_dir", "results"
+        )
+        checkpoint_path = save_run(
+            results_dir,
+            config,
+            report
+            + "\n\nCHECKPOINT: final tuning and refit still pending.\n",
+            run=run + "_nested_checkpoint",
+        )
+        print(
+            f"\nNested-CV checkpoint saved to {checkpoint_path}",
+            flush=True,
+        )
+
+        print(
+            "\n=== Final tuning on all development rows ===",
+            flush=True,
+        )
         pipeline, study = tune_pipeline(
-            pipeline, X_dev, y_dev,
-            inner_cv, scoring, search_space,
-            n_trials, tuning_seed, n_jobs=n_jobs,
+            pipeline,
+            X_dev,
+            y_dev,
+            inner_cv,
+            scorers[selection_metric],
+            search_space,
+            n_trials,
+            tuning_seed,
+            n_jobs=n_jobs,
         )
 
-        report += "\n\n" + tuning_report(
-            study, nested_scores, scoring
+        tuning_text = tuning_report(
+            study, final_scores, selection_metric
         )
+        print(tuning_text)
+        report += "\n\n" + tuning_text
 
-    # When tuning is enabled, these are nested OOF predictions.
-    report += "\n\n" + oof_classification_report(y_dev, y_oof)
-    report += "\n" + fairness_report(
+    classification_text = oof_classification_report(
+        y_dev, oof_proba
+    )
+    fairness_text = fairness_report(
         y_dev,
-        y_oof,
+        oof_proba,
         extras_dev,
         sensitive_attr=config["data"]["sensitive_attr"],
     )
 
-    # Fit the selected pipeline on all development rows.
-    final_model = pipeline.fit(X_dev, y_dev)
+    print("\n" + classification_text)
+    print("\n" + fairness_text)
+    report += "\n\n" + classification_text
+    report += "\n\n" + fairness_text
+
+    pipeline.fit(X_dev, y_dev)
 
     refit = (
-        f"Final model: {config['model']['type']} "
-        f"refit on all {len(X_dev)} development rows."
+        f"Final model: {model_type} refit on "
+        f"{len(X_dev)} development rows."
     )
-    print(refit)
-    report += "\n" + refit + "\n"
-
     locked = (
-        f"Locked test set: {len(X_test)} rows set aside, not evaluated. "
-        f"Development set: {len(X_dev)} rows."
+        f"Locked test set: {len(X_test)} rows, not evaluated."
     )
-    print(locked)
-    report += "\n" + locked + "\n"
+    report += "\n\n" + refit + "\n" + locked + "\n"
 
-    results_dir = config.get("output", {}).get(
-        "results_dir", "results"
+    row = {
+        "run": run,
+        "data": config["data"]["path"],
+        "model": model_type,
+        "tuned": tuning_enabled,
+        "n_trials": (
+            tuning_config["n_trials"] if tuning_enabled else 0
+        ),
+        "encoder": config["preprocessing"]["encoder"],
+        "scaler": config["preprocessing"]["scaler"],
+        "numeric_features": str(
+            config["preprocessing"]["numeric_features"]
+        ),
+        "params": str(config["model"].get("params")),
+        "tuned_params": (
+            str(study.best_params) if study is not None else ""
+        ),
+        "metric": selection_metric,
+        "mean": final_scores["validation"].mean(),
+        "std": final_scores["validation"].std(ddof=1),
+        "untuned": untuned,
+        "floor": floor,
+    }
+
+    for fold, score in enumerate(
+        final_scores["validation"], start=1
+    ):
+        row[f"fold_{fold}"] = score
+
+    for name in metrics:
+        row[f"{name}_mean"] = final_scores[name].mean()
+        row[f"{name}_std"] = final_scores[name].std(ddof=1)
+
+    output = config.get("output", {})
+    scoreboard_path = output.get(
+        "scoreboard", "results/runs.csv"
     )
-    path = save_run(results_dir, config, report)
-    print(f"Full results saved to {path}")
+    runs = save_scores(scoreboard_path, row)
+
+    same = runs[
+        (runs["data"] == row["data"])
+        & (runs["metric"] == selection_metric)
+        & (runs["encoder"] == row["encoder"])
+        & (runs["scaler"] == row["scaler"])
+        & (runs["numeric_features"] == row["numeric_features"])
+    ]
+
+    board = (
+        same.sort_values("mean", ascending=False)[
+            [
+                "run",
+                "model",
+                "tuned",
+                "n_trials",
+                "mean",
+                "std",
+                "untuned",
+                "floor",
+            ]
+        ]
+        .rename(columns={"mean": selection_metric})
+        .to_string(
+            index=False,
+            float_format=lambda value: f"{value:.3f}",
+        )
+    )
+
+    print("\n=== Scoreboard ===\n" + board)
+    report += "\nScoreboard:\n" + board + "\n"
+
+    path = save_run(
+        output.get("results_dir", "results"),
+        config,
+        report,
+        run=run,
+    )
+
+    print(f"\n{refit}\n{locked}")
+    print(f"Full report saved to {path}")
+    print(f"Scoreboard saved to {scoreboard_path}")
 
 
 if __name__ == "__main__":

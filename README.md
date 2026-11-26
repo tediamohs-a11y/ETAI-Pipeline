@@ -37,7 +37,9 @@ This table is updated after each practical class, so you can always see what cha
 |------|------------------------|------------------------|
 | 2 | Introduction & baseline pipeline | Initial version: project structure, a single naive train/test split (no cross-validation), minimal preprocessing (drop rows with missing values, one-hot encode categoricals), logistic regression baseline, a first (deliberately simple) fairness check comparing our model's and COMPAS's own false-positive rate by race, train-vs-test accuracy reporting (to start spotting overfitting), and each run's full report saved automatically to `results/` |
 | 3 | EDA + preprocessing -- diagnose the data, then fix it | `src/data_diagnostics.py` (missingness-mechanism test via chi-square + Cramér's V, domain-rule invalid-value detection, two-way duplicate check) and `src/preprocessing.py` (leak-safe category cleanup, mechanism-matched imputation with `_was_missing` indicators for MNAR columns, a deployable `ColumnTransformer`, **and** the train/test split itself, all in the one file rather than split across two) replace the old naive `dropna()`/`pd.get_dummies()` preprocessing; encoder/scaler pair (target encoding + standard scaling) chosen by an empirical grid over 15 repeated splits, checked against the runner-up with a paired comparison so the win isn't just noise; three redundant columns (found via correlation + VIF) dropped; `config.yaml` gains `diagnostics` and `preprocessing` sections -- see "Preprocessing decisions" below. Threshold-independent metrics (ROC-AUC/PR-AUC) and a calibration check are deliberately **not** added yet -- not yet |
-| 4 | Preprocessing inside the pipeline + cross-validation -- evaluating a model honestly | A **locked final test set** (20%, stratified, seed 42) is set aside by `split_dev_test()` (replaces `split_train_test()`) and never scored; models are now judged by **stratified 5-fold cross-validation** of the whole pipeline (preprocessing + model) on the development set, reported per fold with mean ± std and the train-validation gap; the classification report and fairness check now use out-of-fold predictions; target encoding switched to scikit-learn's cross-fitting `TargetEncoder` (a row's own label never leaks into its own encoding), encoder/scaler set by hand in `config.yaml` (target encoding + robust scaling, reasons in the comments); **two fixes** in `clean_dataset()`: genuine `NaN`s in categorical columns were being turned into the string `"nan"` (a fake category), so 229 `c_charge_degree` gaps were never imputed or flagged -- fixed in `config.yaml` alone: `"nan"` added to `diagnostics.placeholder_tokens` (the category cleanup's last step turns listed tokens into `NaN`, after its text conversion); and it no longer drops rows -- de-duplication moved to a separate, training-only `drop_duplicate_rows()` (run before the dev/test split), so the same cleaning can run on new data where every row needs a prediction; `src/data_diagnostics.py` removed -- its one cleaning function (`flag_invalid_values`) moved into `preprocessing.py`, and the EDA-only checks (missingness test, duplicate counts) live in the EDA notebooks, not in every pipeline run; `dummy` (majority-class) model added as the floor to beat, and `random_forest` registered (sensible defaults, untuned); the final model is refit on the whole development set after CV; `config.yaml` gains `test_set` and `cv` sections -- see "Model evaluation" below |
+| 4 | Preprocessing inside the pipeline + cross-validation -- evaluating a model honestly | A **locked final test set** (20%, stratified, seed 42) is set aside by `split_dev_test()` (replaces `split_train_test()`) and never scored; models are now judged by **stratified 5-fold cross-validation** of the whole pipeline (preprocessing + model) on the development set, reported per fold with mean ± std and the train-validation gap; the classification report and fairness check now use out-of-fold predictions; target encoding switched to scikit-learn's cross-fitting `TargetEncoder` (a row's own label never leaks into its own encoding), encoder/scaler set by hand in `config.yaml` (target encoding + robust scaling, reasons in the comments); **two fixes** in `clean_dataset()`: genuine `NaN`s in categorical columns were being turned into the string `"nan"` (a fake category), so 229 `c_charge_degree` gaps were never imputed or flagged -- fixed in `config.yaml` alone: `"nan"` added to `diagnostics.placeholder_tokens` (the category cleanup's last step turns listed tokens into `NaN`, after its text conversion); and it no longer drops rows -- de-duplication moved to a separate, training-only `drop_duplicate_rows()` (run before the dev/test split), so the same cleaning can run on new data where every row needs a prediction; `src/data_diagnostics.py` removed -- its one cleaning function (`flag_invalid_values`) moved into `preprocessing.py`, and the EDA-only checks (missingness test, duplicate counts) live in the EDA notebooks, not in every pipeline run; `dummy` (majority-class) model added as the floor to beat, and `random_forest` registered (sensible defaults, untuned); the final model is refit on the whole development set after CV; `config.yaml` gains `test_set` and `cv` sections -- see "Model evaluation" below | | 5 | Hyperparameter tuning | Added Optuna tuning and nested cross-validation. Final hyperparameters are selected on the development set; the test set remains locked. |
+| 6 | Ensembles and feature engineering | Added Oblique Random Forest and AdaBoost. Compared tuned ensembles using nested CV and tested three engineered features with Random Forest, AdaBoost and logistic regression. |
+| 7 | Boosting, multiple metrics and scoreboard | Added Gradient Boosting, HistGradientBoosting and Gaussian Naive Bayes. Reported eight metrics, tuned using ROC-AUC, and saved results in results/runs.csv. Evaluated all nine models, with 30-trial nested CV for the eight learned models. |
 
 ## Preprocessing decisions
 
@@ -367,3 +369,73 @@ With all three engineered features:
 - Random Forest: results/run_20261107_232122.txt
 - AdaBoost: results/run_20261107_230904.txt
 - Logistic regression: results/run_20261107_233235.txt
+
+## Week 7: Multiple metrics and model comparison
+
+All models used the same 5,771 development rows and five stratified
+outer folds (random_state=42). The original feature set was used.
+Preprocessing was fitted within each training fold. The 1,443 test
+rows remained locked and were not evaluated.
+
+Each learned model was tuned with 30 Optuna trials per study and
+five inner folds. The dummy model was evaluated without tuning.
+The table excludes the preliminary 5-trial test run.
+
+### Selection metric
+
+I selected ROC-AUC because it evaluates how well the model ranks
+positive cases above negative cases across decision thresholds.
+This separates model selection from the choice of a classification
+threshold. Precision, recall, F1, F2, balanced accuracy, accuracy and
+average precision were also reported to show other aspects of
+performance.
+
+### Scoreboard
+
+| Model | Untuned CV ROC-AUC | Tuned nested-CV ROC-AUC, mean ± std | Dummy floor |
+|---|---|---|---|
+| Dummy | 0.500 | Not tuned | 0.500 |
+| Logistic regression | 0.719 | 0.718 ± 0.014 | 0.500 |
+| Gaussian Naive Bayes | 0.685 | 0.691 ± 0.012 | 0.500 |
+| Decision tree | 0.604 | 0.717 ± 0.017 | 0.500 |
+| Random Forest | 0.683 | 0.726 ± 0.013 | 0.500 |
+| Oblique Random Forest | 0.685 | 0.726 ± 0.015 | 0.500 |
+| AdaBoost | 0.723 | 0.726 ± 0.016 | 0.500 |
+| Gradient Boosting | 0.727 | 0.727 ± 0.014 | 0.500 |
+| HistGradientBoosting | 0.717 | 0.727 ± 0.016 | 0.500 |
+
+Untuned means the parameters specified for each model in
+run_week7.py. Logistic regression, decision tree, Random Forest
+and HistGradientBoosting used class_weight="balanced".
+
+### Interpretation
+
+Gradient Boosting had the highest unrounded mean ROC-AUC, although
+it ties with HistGradientBoosting at three decimal places.
+The leading five ensembles differ by approximately 0.001 at the
+reported precision. These differences are small relative to their
+fold standard deviations; this comparison does not establish a
+statistically significant winner.
+
+Tuning improved the decision tree and both forests substantially.
+Logistic regression did not improve, showing that tuning does not
+guarantee better outer-fold performance.
+
+I would provisionally select Gradient Boosting and report its
+nested-CV ROC-AUC of 0.727 ± 0.014, rather than its best-trial tuning
+score. ROC-AUC does not establish calibration or fairness: the
+threshold-based classification reports and false-positive rates
+by race must be considered separately.
+
+### Reproducibility
+
+run_week7.py executes all nine models sequentially without
+modifying config.yaml. Each completed run saves a full text report
+and a scoreboard row in results/runs.csv. Nested-CV checkpoints
+are saved before final tuning.
+
+Final Gradient Boosting report:
+results/run_20261126_014112.txt
+
+Final HistGradientBoosting report:
+results/run_20261126_015309.txt
